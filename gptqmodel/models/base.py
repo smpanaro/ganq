@@ -398,7 +398,7 @@ class BaseGPTQModel(nn.Module):
             "retain_w": needs_lora,  # lora needs original w
         }
 
-        # init processor with default GPTQ processor
+        # init processor with appropriate processor based on quant_method
         if self.quantize_config.quant_method == QUANT_METHOD.QQQ:
             from ..looper.qqq_processor import QQQProcessor
             quantize_processor = QQQProcessor(**args)
@@ -422,6 +422,10 @@ class BaseGPTQModel(nn.Module):
                                              device=self.quantize_config.device, **module_name_args)
                 if auto_gc:
                     torch_empty_cache()
+
+        elif self.quantize_config.quant_method == QUANT_METHOD.GANQ:
+            from ..looper.gptq_processor import GPTQProcessor
+            quantize_processor = GPTQProcessor(**args)
 
         else:
             from ..looper.gptq_processor import GPTQProcessor

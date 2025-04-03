@@ -161,40 +161,10 @@ class GPTQ:
         self.module.weight.data = Q
         return scale, zero, g_idx, duration, avg_loss, damp_percent
 
-    @torch.inference_mode()
-    def quantize(
-        self,
-        blocksize=128,
-    ):
-        start = time.time()
-
-        # process buffered inputs
-        for inp in self.fwd_inputs_buffered_data:
-            self.process_batch(inp)
-
-        # release buffer
-        del self.fwd_inputs_buffered_data
-
-        # if self.device.type not in ["mps", "cpu"]:
-        #     self.module.weight.data = self.module.weight.data.cpu()
-
-        # TODO: waiting for pytorch implementation of ops for MPS
-        if sys.platform == "darwin" and os.getenv("PYTORCH_ENABLE_MPS_FALLBACK") != "1":
-            raise RuntimeError("For MacOS you must set env `PYTORCH_ENABLE_MPS_FALLBACK=1` before running quantization.")
-
-        if self.module_copy is None:
-            W = self._clone_module()
-        else:
-            W = self.module_copy
-            self.module_copy = None
-
-        self.quantizer.find_params(W, weight=True)
-
-        H = self.H
-        del self.H
-        dead = torch.diag(H) == 0
-        H[dead, dead] = 1
-        W[:, dead] = 0
+    def _perform_quantization_loop(self, W, Hinv, blocksize, perm=None, invperm=None):
+        """Quantize W column-by-column, compensating for errors using the Hinv, inverse Hessian."""
+        Losses = torch.zeros_like(W)
+        Q = torch.zeros_like(W)
 
         # g_idx = []
         scale = []
@@ -212,38 +182,6 @@ class GPTQ:
                 scale.append(quantizer.scale)
                 zero.append(quantizer.zero)
                 groups.append(quantizer)
-
-        if self.qcfg.desc_act:
-            perm = torch.argsort(torch.diag(H), descending=True)
-            W = W[:, perm]
-            H = H[perm][:, perm]
-            invperm = torch.argsort(perm)
-
-        Losses = torch.zeros_like(W)
-        Q = torch.zeros_like(W)
-
-        damp_percent = self.qcfg.damp_percent
-        while 1 > damp_percent > 0:
-            try:
-                damp = damp_percent * torch.mean(torch.diag(H))
-                diag = torch.arange(self.columns, device=self.device)
-                H[diag, diag] += damp
-
-                H = torch.linalg.cholesky(H)
-                H = torch.cholesky_inverse(H)
-                H = torch.linalg.cholesky(H, upper=True)
-                Hinv = H
-                break
-            except torch._C._LinAlgError as e:
-                if  self.qcfg.damp_auto_increment != 0:
-                    log.warn(f"Quantization: Current `damp_percent = {damp_percent:.5f}` is too low, auto-incrementing by `{ self.qcfg.damp_auto_increment:.5f}`")
-                    damp_percent +=  self.qcfg.damp_auto_increment
-                else:
-                    log.warn("Quantization: Please increase damp or nsamples for calibration data to avoid the following quant error: current damp_percent=`{damp_percent:.5f}`")
-                    raise e
-
-        if not (0 < damp_percent < 1):
-            raise ValueError(f"Quantization: `damp_percent` must between 0 and 1. current is {damp_percent}")
 
         for i1 in range(0, self.columns, blocksize):
             i2 = min(i1 + blocksize, self.columns)
@@ -294,6 +232,90 @@ class GPTQ:
             #
             #     logger.debug(torch.sum((self.layer(self.inp1) - self.out1) ** 2))
             #     logger.debug(torch.sum(Losses))
+
+        return Q, Losses, scale, zero
+
+    @torch.inference_mode()
+    def quantize(
+        self,
+        blocksize=128,
+    ):
+        start = time.time()
+
+        # process buffered inputs
+        for inp in self.fwd_inputs_buffered_data:
+            self.process_batch(inp)
+
+        # release buffer
+        del self.fwd_inputs_buffered_data
+
+        # if self.device.type not in ["mps", "cpu"]:
+        #     self.module.weight.data = self.module.weight.data.cpu()
+
+        # TODO: waiting for pytorch implementation of ops for MPS
+        if sys.platform == "darwin" and os.getenv("PYTORCH_ENABLE_MPS_FALLBACK") != "1":
+            raise RuntimeError("For MacOS you must set env `PYTORCH_ENABLE_MPS_FALLBACK=1` before running quantization.")
+
+        if self.module_copy is None:
+            W = self._clone_module()
+        else:
+            W = self.module_copy
+            self.module_copy = None
+
+        self.quantizer.find_params(W, weight=True)
+
+        H = self.H
+        del self.H
+        dead = torch.diag(H) == 0
+        H[dead, dead] = 1
+        # W[:, dead] = 0 # GPTQ
+        W[:, dead] = torch.mean(W[:, ~dead], dim=1, keepdim=True) # GANQ
+
+        perm = None
+        invperm = None
+
+        if self.qcfg.act_sort != "none":
+            assert self.qcfg.act_sort in ["asc", "desc"]
+            perm = torch.argsort(torch.diag(H), descending=self.qcfg.act_sort == "desc")
+            W = W[:, perm]
+            H = H[perm][:, perm]
+            invperm = torch.argsort(perm)
+
+        self.Xxt = H.clone() # Undamped.
+        if self.qcfg.l_damp_style == "ganq":
+            offset = (torch.sum(torch.abs(H), dim=1) - 2 * torch.diag(H)).clamp(min=1e-8)
+            self.L = torch.linalg.cholesky(H + torch.diag(offset))
+
+        damp_percent = self.qcfg.damp_percent
+        while 1 > damp_percent > 0:
+            try:
+                damp = damp_percent * torch.mean(torch.diag(H))
+                diag = torch.arange(self.columns, device=self.device)
+                H[diag, diag] += damp
+
+                self.Xxt_damped = H.clone()
+
+                L = torch.linalg.cholesky(H)
+                if self.qcfg.l_damp_style == "gptq":
+                    self.L = L.clone()
+
+                H = torch.cholesky_inverse(L) # Falls back to CPU for MPS, but pretty fast.
+                H = torch.linalg.cholesky(H, upper=True)
+                Hinv = H
+                break
+            except torch._C._LinAlgError as e:
+                if  self.qcfg.damp_auto_increment != 0:
+                    log.warn(f"Quantization: Current `damp_percent = {damp_percent:.5f}` is too low, auto-incrementing by `{ self.qcfg.damp_auto_increment:.5f}`")
+                    damp_percent +=  self.qcfg.damp_auto_increment
+                else:
+                    log.warn("Quantization: Please increase damp or nsamples for calibration data to avoid the following quant error: current damp_percent=`{damp_percent:.5f}`")
+                    raise e
+
+        if not (0 < damp_percent < 1):
+            raise ValueError(f"Quantization: `damp_percent` must between 0 and 1. current is {damp_percent}")
+
+        # Run the core quantization loop
+        Q, Losses, scale, zero = self._perform_quantization_loop(W, Hinv, blocksize, perm, invperm)
 
         torch_sync(self.device)
 

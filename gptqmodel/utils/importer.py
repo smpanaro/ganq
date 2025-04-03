@@ -31,6 +31,7 @@ from ..nn_modules.qlinear.ipex import IPEXQuantLinear
 from ..nn_modules.qlinear.marlin import MarlinQuantLinear
 from ..nn_modules.qlinear.qqq import QQQQuantLinear
 from ..nn_modules.qlinear.torch import TorchQuantLinear
+from ..nn_modules.qlinear.fake import FakeQuantLinear
 from ..nn_modules.qlinear.tritonv2 import TRITON_AVAILABLE, TRITON_INSTALL_HINT, TritonV2QuantLinear
 from ..quantization import FORMAT
 from ..utils.logger import setup_logger
@@ -51,6 +52,7 @@ AUTO_SELECT_BACKEND_ORDER = OrderedDict({
     BACKEND.IPEX: IPEXQuantLinear, # best kernel Intel XPU and CPU with amx/avx512/xmx
     BACKEND.BITBLAS: BitBLASQuantLinear, # super slow AOT pre-compiler but fastest for bs=1
     BACKEND.TORCH: TorchQuantLinear, # slightly slower than Triton but getting close in Torch 2.6.0+
+    BACKEND.FAKE: FakeQuantLinear, # fake fp16 or bf16
 
     BACKEND.QQQ: QQQQuantLinear, # qqq kernel based on marlin
 })
@@ -62,6 +64,7 @@ FORMAT_DICT = {
     FORMAT.BITBLAS: [BACKEND.BITBLAS],
     FORMAT.IPEX: [BACKEND.IPEX],
     FORMAT.QQQ: [BACKEND.QQQ],
+    FORMAT.FAKE: [BACKEND.FAKE],
 }
 
 def normalize_device_device_map(device: Optional[Union[str, torch.device]], device_map: Optional[Union[str, Dict]]) -> Optional[DEVICE]:

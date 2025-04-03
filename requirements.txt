@@ -13,3 +13,4 @@ hf_transfer>=0.1.9
 huggingface_hub>=0.28.1
 tokenicer==0.0.4
 logbar==0.0.4
+kmeans1d @ git+https://github.com/smpanaro/kmeans1d@831c169c3729aba18ca9ff4e57c4a7d26bcc8271

@@ -31,6 +31,7 @@ class BACKEND(str, Enum):
     MARLIN_FP16 = "marlin_fp16" # FASTEST and then some: marlin reduce ops in fp16 (lower precision -> less accurate, slightly faster)
     BITBLAS = "bitblas" # EXTREMELY FAST: speed at the cost of 10+ minutes of AOT (ahead of time compilation with disk cache)
     IPEX = "ipex" # Best kernel for Intel XPU and Intel/AMD CPU with AVX512, AMX, # XMX
+    FAKE = "fake" # For GANQ
 
     # qqq
     QQQ = "qqq" # marlin based qqq kernel

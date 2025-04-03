@@ -27,6 +27,7 @@ from ..models.writer import (PROCESS_LOG_FWD_TIME, PROCESS_LOG_LAYER, PROCESS_LO
                              PROCESS_LOG_NAME, PROCESS_LOG_TIME, QUANT_LOG_DAMP, QUANT_LOG_LOSS)
 from ..quantization import GPTQ
 from ..quantization.config import QUANT_METHOD, QuantizeConfig
+from ..quantization.ganq import GANQ
 from ..quantization.gptq import CPU
 from ..utils.logger import setup_logger
 from ..utils.model import move_to, pack_model
@@ -82,7 +83,10 @@ class GPTQProcessor(LoopProcessor):
             qcfg_clone.damp_percent = self.qcfg.dynamic_get(module.full_name, "damp_percent", qcfg_clone.damp_percent)
             qcfg_clone.static_groups = self.qcfg.dynamic_get(module.full_name, "static_groups", qcfg_clone.static_groups)
 
-        tmp = GPTQ(module=module, qcfg=qcfg_clone)
+        if qcfg_clone.quant_method == QUANT_METHOD.GANQ:
+            tmp = GANQ(module=module, qcfg=qcfg_clone)
+        else:
+            tmp = GPTQ(module=module, qcfg=qcfg_clone)
 
         # models like DeepSeek v3/r1 has > 256 $ of sub-modules per layer
         # use buffered mode go vram don't explode: gptq needs to store fwd inputs per each layer fwd
@@ -218,7 +222,7 @@ class GPTQProcessor(LoopProcessor):
         # set quantized state
         model.quantized = True
 
-        model.quantize_config.quant_method = QUANT_METHOD.GPTQ
+        model.quantize_config.quant_method = self.qcfg.quant_method
 
         super().finalize(model=model, **kwargs)
 

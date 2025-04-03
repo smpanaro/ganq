@@ -16,13 +16,13 @@
 
 import os
 
-from gptqmodel import GPTQModel, QuantizeConfig, get_best_device
+from gptqmodel import GPTQModel, QuantizeConfig, FORMAT, QUANT_METHOD, get_best_device
 from transformers import AutoTokenizer
 
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 
-pretrained_model_id = "/monster/data/model/TinyLlama-1.1B-Chat-v1.0" # "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-quantized_model_id = "TinyLlama-1.1B-Chat-v1.0-4bit-128g"
+pretrained_model_id = "facebook/opt-125m"
+quantized_model_id = "facebook/opt-125m-4bit-ganq"
 
 
 def main():
@@ -33,9 +33,22 @@ def main():
         )
     ]
 
+    bits = 4 # quantize model to 4-bit
+
+    # GPTQ
+    # quantize_config = QuantizeConfig(
+    #     bits=bits,
+    #     group_size=128,  # it is recommended to set the value to 128
+    # )
+
+    # GANQ
     quantize_config = QuantizeConfig(
-        bits=4,  # quantize model to 4-bit
-        group_size=128,  # it is recommended to set the value to 128
+        bits=bits,
+        quant_method=QUANT_METHOD.GANQ,
+        format=FORMAT.FAKE,  # float16, no custom kernels
+        ganq_iterations=10,  # K=10 is mentioned in the paper for 7B models
+        act_sort="asc",
+        l_damp_style="ganq",
     )
 
     # load un-quantized model, by default, the model will always be loaded into CPU memory
@@ -75,7 +88,7 @@ def main():
     # model = GPTQModel.from_quantized(repo_id, device="cuda:0",)
 
     # inference with model.generate
-    print(tokenizer.decode(model.generate(**tokenizer("gptqmodel is", return_tensors="pt").to(model.device))[0]))
+    print(tokenizer.decode(model.generate(**tokenizer("gptqmodel is", return_tensors="pt").to(model.device), max_new_tokens=10)[0]))
 
 
 if __name__ == "__main__":

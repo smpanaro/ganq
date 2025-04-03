@@ -1,3 +1,43 @@
+# GANQ: GPU-Adaptive Non-Uniform Quantization for Large Language Models
+Unofficial implementation of the [GANQ paper](https://arxiv.org/abs/2501.12956). Built on top of GPTQModel.
+
+To run:
+```sh
+$ pip install -v --no-build-isolation .[mlx] # include MLX for faster quantization
+$ PYTORCH_ENABLE_MPS_FALLBACK=1 python examples/quantization/basic_usage.py
+# or
+$ PYTORCH_ENABLE_MPS_FALLBACK=1 python examples/quantization/basic_usage_wikitext2.py
+```
+
+## GANQ Results
+
+**opt-125m**
+|Method            |Source|Wiki Ppl (↓)|Delta (↓)|
+|--                |--    |--          |--       |
+|float16           |Repo  |27.65       |-        |
+|GPTQ              |Paper |31.08       |+3.43    |
+|GPTQ              |Repo  |33.47       |+5.82    |
+|GPTQ (g128)       |Paper |29.78       |+2.13    |
+|GPTQ (g128)       |Repo  |31.67       |+4.02    |
+|GANQ              |Paper |28.58       |+0.93    |
+|GANQ              |Repo  |28.45       |+0.80    |
+
+**opt-350m**
+|Method            |Source|Wiki Ppl (↓)|Delta (↓)|
+|--                |--    |--          |--       |
+|float16           |Repo  |22.00       |-        |
+|GANQ              |Paper |23.04       |+1.04    |
+|GANQ              |Repo  |22.82       |+0.82    |
+
+**Llama-3.2-1B**
+|Method            |Source|Wiki Ppl (↓)|Delta (↓)|
+|--                |--    |--          |--       |
+|float16           |Repo  |9.75        |-        |
+|GPTQ (g128)       |Repo  |43.95       |+34.2    |
+|GANQ              |Repo  |10.86       |+1.11    |
+
+---
+
 <p align=center>
 <img src='https://github.com/user-attachments/assets/e6f12127-39f2-4f39-abfc-3a052f037a46'></img>
 <h1 align="center">GPTQModel</h1>

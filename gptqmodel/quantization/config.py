@@ -72,6 +72,7 @@ class FORMAT:
     BITBLAS = "bitblas"
     IPEX = "ipex"
     QQQ = "qqq"
+    FAKE = "fake"
 
 
 # quant methods
@@ -79,6 +80,7 @@ class QUANT_METHOD:
     GPTQ = "gptq"
     AUTO_ROUND = "auto_round"
     QQQ = "qqq"
+    GANQ = "ganq"
 
 
 QUANT_METHOD_FORMAT_MAPPING = {
@@ -97,6 +99,9 @@ QUANT_METHOD_FORMAT_MAPPING = {
     },
     QUANT_METHOD.QQQ: {
         FORMAT.QQQ,
+    },
+    QUANT_METHOD.GANQ: {
+        FORMAT.FAKE,
     },
 }
 
@@ -159,11 +164,14 @@ class QuantizeConfig():
     # use 32 for highest quality with slower inference and higher vram usage
     group_size: int = field(default=128)
 
-    # increase damp if NaN is encountred during `.quantize()` and/or increase calib dataset size
+    # increase damp if NaN is encountered during `.quantize()` and/or increase calib dataset size
     damp_percent: float = field(default=0.01)
     damp_auto_increment: float = field(default=0.0025)
 
-    desc_act: bool = field(default=True)
+    l_damp_style: str = field(default="gptq", metadata={"choices": ["gptq", "ganq"]})
+
+    desc_act: bool = field(default=True) # For backwards compatibility.
+    act_sort: str = field(default="auto", metadata={"choices": ["auto", "none", "desc", "asc"]})
     static_groups: bool = field(default=False)
     sym: bool = field(default=True)
     true_sequential: bool = field(default=True)
@@ -201,6 +209,8 @@ class QuantizeConfig():
     rotation: Optional[str] = field(default=None, metadata={"choices": ["hadamard", "random"]})
 
     is_marlin_format: bool = False
+
+    ganq_iterations: int = field(default=5)
 
     def __post_init__(self):
         fields_info = fields(self)
@@ -259,6 +269,9 @@ class QuantizeConfig():
 
         if self.damp_auto_increment < 0:
             raise ValueError("QuantizeConfig:: `damp_auto_increment` must greater than 0.")
+
+        if self.act_sort == "auto":
+            self.act_sort = "desc" if self.desc_act else "none"
 
         # validate meta
         if self.meta is not None:
@@ -391,7 +404,7 @@ class QuantizeConfig():
                     normalized[FORMAT_FIELD_CODE] = FORMAT.MARLIN
                 elif val == FORMAT.BITBLAS:
                     normalized[FORMAT_FIELD_CODE] = FORMAT.BITBLAS
-                elif val not in {QUANT_METHOD.GPTQ, QUANT_METHOD.AUTO_ROUND, QUANT_METHOD.QQQ}:
+                elif val not in {QUANT_METHOD.GPTQ, QUANT_METHOD.AUTO_ROUND, QUANT_METHOD.QQQ, QUANT_METHOD.GANQ}:
                     raise ValueError(f"QuantizeConfig: Unknown quantization method: `{val}`.")
                 else:
                     normalized[QUANT_METHOD_FIELD] = val
