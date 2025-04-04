@@ -332,7 +332,8 @@ class GANQ(GPTQ):
             # Per docs lstsq is both faster and more numerically stable.
             # However, our matrix is ill-conditioned so we can only use
             # it on CPU where gelsd is available.
-            mode = "least_squares" if True and W.device == torch.device("cpu") else "manual"
+            cpu_fallback_enabled = W.device.type == "mps" and os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK", "") == "1"
+            mode = "least_squares" if cpu_fallback_enabled or W.device.type == "cpu" else "manual"
             if mode == "least_squares":
                 # Derivation of lstsq rearrangement:
                 # T_new = W @ H @ S.T @ (S @ H.T @ S.T)†
