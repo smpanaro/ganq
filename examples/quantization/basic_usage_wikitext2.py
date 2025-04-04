@@ -23,8 +23,6 @@ pretrained_model_id = "facebook/opt-125m"
 quantized_model_id = "facebook/opt-125m-4bit-ganq"
 SAVE = False
 
-
-# os.makedirs(quantized_model_dir, exist_ok=True)
 def get_wikitext2(tokenizer, nsamples, seqlen):
     traindata = load_dataset("wikitext", "wikitext-2-raw-v1", split="train").filter(
         lambda x: len(x["text"]) >= seqlen)
@@ -157,72 +155,6 @@ def main():
 
     # print(f"Quantized Model {quantized_model_id} avg PPL is {calculate_avg_ppl(model, tokenizer)}")
     print(f"GPTQ-style PPL: {calculate_gptq_style_ppl(model, tokenizer)}")
-
-
-"""
-opt-125m 4bit
-ppl: n_ctx=512, n_batch=512 (wikitext calibration)
-full precision: 31.682025853092167
-Unweighted K-means init, no update T, no residual: 35.96709149754015
-Unweighted K-means init, no update T: 34.39118949638684
-Unweighted K-means init, 3 iter: 33.23322625259391
-LeanQuant init, no update T, no residual: 33.1364 (note: this is probably wrong, copied the running value not the avg)
-LeanQuant init, no update T: 32.97221825699441
-LeanQuant init, 3 iter: 33.047617237962235
-LeanQuant init, 10 iter: 33.06866168709128 (2h 4m)
-LeanQuant init, 20 iter: 32.94871519605243
-
-gptq-style ppl (like the paper heh) c4 32 sample 2048 length calibration
-full precision: 27.65597152709961
-Unweighted K-means init, no update T, no residual: 30.654926300048828
-Unweighted K-means init, no update T: 30.528535842895508
-Unweighted K-means init, 3 iter: 29.7772159576416
-LeanQuant init, no update T, no residual: 29.38700294494629
-LeanQuant init, no update T: 30.29509162902832
-LeanQuant init, 3 iter: 29.664766311645508
-LeanQuant init, 10 iter: 29.954303741455078 (with a faster but I believe equivalent implementation using gather. edit: confirmed equivalent)
-LeanQuant init, 1 iter, asc act: 49.52968215942383
-LeanQuant init, 3 iter, asc act: 28.941638946533203
-LeanQuant init, 10 iter, asc act: 29.09243392944336
-LeanQuant init, no update T, asc act: 30.789966583251953
-
-LeanQuant init, 3 iter, asc act, offset from email: 28.774633407592773
-LeanQuant init, 3 iter, asc act, offset from email, dead from email: 28.645851135253906
-LeanQuant init, 10 iter, asc act, offset from email, dead from email, best dist: 28.454055786132812
-LeanQuant init, 20 iter, asc act, offset from email, dead from email, best dist: 28.6750431060791
-Linear init, 20 iter, asc act, offset from email, dead from email, best dist: 29.949174880981445
-
-GPTQ -1: 33.47614288330078
-GPTQ 128g: 31.671430587768555
-
-256 samples
-LeanQuant init, no update T: 29.830928802490234
-
-32 samples, shuffled
-LeanQuant init, no update T: 30.54884147644043
-
-128 samples, shuffled
-LeanQuant init, no update T: 30.329238891601562
-"""
-
-"""
-opt-350m
-gptq-style ppl (like the paper) c4 32 sample 2048 length calibration
-full precision: 22.002840042114258
-LeanQuant init, 10 iter, asc act, offset from email, dead from email, best dist: 22.827716827392578
-"""
-
-"""
-meta-llama/Llama-3.2-1B
-gptq-style ppl (like the paper) c4 32 sample 2048 length calibration
-full precision: 9.750941276550293
-GPTQ -1 (128 samples): 4025.17041015625 (?? sus)
-128g (128 samples): 43.95853042602539 (???)
-LeanQuant init, no update T: 11.178799629211426
-LeanQuant init, 10 iter, asc act, offset from email, dead from email, best dist: 10.95457649230957
-LeanQuant init, 10 iter, asc act, best dist: 10.866992950439453
-LeanQuant init, no update T, asc act, offset from email, dead from email, best dist:
-"""
 
 if __name__ == "__main__":
     import logging

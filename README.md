@@ -9,7 +9,11 @@ $ PYTORCH_ENABLE_MPS_FALLBACK=1 python examples/quantization/basic_usage.py
 $ PYTORCH_ENABLE_MPS_FALLBACK=1 python examples/quantization/basic_usage_wikitext2.py
 ```
 
+The main implementation lives in [ganq.py](gptqmodel/quantization/ganq.py). Tested on MPS and CPU, but not CUDA.
+
 ## GANQ Results
+
+This repo reproduces the GANQ perplexity results for opt-125m and opt-350m from the paper. It isn't clear why the GPTQ results differ between the repo and paper (possibly a different implementation).
 
 **opt-125m**
 |Method            |Source|Wiki Ppl (↓)|Delta (↓)|
@@ -35,6 +39,27 @@ $ PYTORCH_ENABLE_MPS_FALLBACK=1 python examples/quantization/basic_usage_wikitex
 |float16           |Repo  |9.75        |-        |
 |GPTQ (g128)       |Repo  |43.95       |+34.2    |
 |GANQ              |Repo  |10.86       |+1.11    |
+
+## Thanks
+- Special thanks GANQ authors for both the paper and answering questions during implementation.
+- [GPTQModel](https://github.com/ModelCloud/GPTQModel/tree/main) for a performant GPTQ implementation that works on MPS.
+
+## Citation
+
+```bibtex
+@misc{zhao2025ganqgpuadaptivenonuniformquantization,
+      title={GANQ: GPU-Adaptive Non-Uniform Quantization for Large Language Models},
+      author={Pengxiang Zhao and Xiaoming Yuan},
+      year={2025},
+      eprint={2501.12956},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2501.12956},
+}
+```
+
+## GPTQModel
+This repo is built on top of GPTQModel, the original README follows.
 
 ---
 

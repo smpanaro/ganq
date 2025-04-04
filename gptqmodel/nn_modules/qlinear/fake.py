@@ -13,6 +13,7 @@ from ...utils.torch import torch_compile
 log = setup_logger()
 
 class FakeQuantLinear(PackableQuantLinear):
+    """This was copied from a different PackableQuantLinear, so may need some clean up."""
     SUPPORTS_BITS = [2, 3, 4, 8]
     SUPPORTS_GROUP_SIZE = [-1, 16, 32, 64, 128]
     SUPPORTS_DESC_ACT = [True, False]
