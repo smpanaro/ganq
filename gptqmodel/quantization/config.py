@@ -170,6 +170,8 @@ class QuantizeConfig():
 
     l_damp_style: str = field(default="gptq", metadata={"choices": ["gptq", "ganq"]})
 
+    dead: str = field(default="zero", metadata={"choices": ["zero", "mean"]})
+
     desc_act: bool = field(default=True) # For backwards compatibility.
     act_sort: str = field(default="auto", metadata={"choices": ["auto", "none", "desc", "asc"]})
     static_groups: bool = field(default=False)

@@ -49,6 +49,7 @@ def main():
         ganq_iterations=10,  # K=10 is mentioned in the paper for 7B models
         act_sort="asc",
         l_damp_style="ganq",
+        dead="mean",
     )
 
     # load un-quantized model, by default, the model will always be loaded into CPU memory

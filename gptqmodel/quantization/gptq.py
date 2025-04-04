@@ -268,8 +268,12 @@ class GPTQ:
         del self.H
         dead = torch.diag(H) == 0
         H[dead, dead] = 1
-        # W[:, dead] = 0 # GPTQ
-        W[:, dead] = torch.mean(W[:, ~dead], dim=1, keepdim=True) # GANQ
+        if self.qcfg.dead == "zero":
+            W[:, dead] = 0
+        elif self.qcfg.dead == "mean":
+            W[:, dead] = torch.mean(W[:, ~dead], dim=1, keepdim=True)
+        else:
+            assert False, f"Unknown dead mode: {self.qcfg.dead}"
 
         perm = None
         invperm = None
