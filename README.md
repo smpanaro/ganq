@@ -40,6 +40,22 @@ This repo reproduces the GANQ perplexity results for opt-125m and opt-350m from 
 |GPTQ (g128)       |Repo  |43.95       |+34.2    |
 |GANQ              |Repo  |10.86       |+1.11    |
 
+### Benchmarks
+
+The original paper only reports perplexity.
+
+**opt-125m**
+
+| Method        | ARC-C  | ARC-E  | BoolQ  | HellaSwag | PIQA   | Winogrande |Avg.  |
+|---------------|--------|--------|--------|-----------|--------|------------|------|
+| float16       | 0.1902 | 0.4347 | 0.5544 | 0.2916    | 0.6300 | 0.5035     |0.4340|
+| GPTQ          | 0.1860 | 0.4229 | 0.5602 | 0.2861    | 0.6191 | 0.5098     |0.4306|
+| GPTQ (g128)   | 0.1860 | 0.4225 | 0.5486 | 0.2899    | 0.6191 | 0.5224     |0.4314|
+| GANQ (CUDA)†  | 0.1970 | 0.4162 | 0.6143 | 0.2838    | 0.6218 | 0.5051     |0.4397|
+| GANQ (MPS/MLX)| 0.1970 | 0.4313 | 0.5804 | 0.2864    | 0.6256 | 0.4972     |0.4363|
+
+<sub>† perplexity was 32.08 vs. 28.45 when quantized using MPS+MLX, but benchmarks are comparable.</sub>
+
 ## Thanks
 - Special thanks GANQ authors for both the paper and answering questions during implementation.
 - [GPTQModel](https://github.com/ModelCloud/GPTQModel/tree/main) for a performant GPTQ implementation that works on MPS.
