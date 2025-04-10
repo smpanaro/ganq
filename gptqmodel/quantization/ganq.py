@@ -2,6 +2,7 @@ import math
 import os
 import time
 import concurrent.futures
+from typing import Union
 
 import torch
 import torch.nn as nn
@@ -9,7 +10,7 @@ import torch.nn.functional as F
 
 try:
     import mlx.core as mx
-    USE_MLX = True
+    USE_MLX = torch.mps.is_available()
 except ImportError:
     USE_MLX = False
 
@@ -28,10 +29,257 @@ def kmeans_fit(row_data):
     _, centroids = kmeans1d.cluster(weights_np, n_cluster, weights=sample_weight)
     return np.array(centroids, dtype=np.float32)
 
-def to_mlx(x: torch.Tensor):
+def to_mlx(x: Union[torch.Tensor, mx.array]):
+    if isinstance(x, mx.array):
+        return x
     return mx.array(x.cpu().numpy())
 def from_mlx(x: mx.array):
-    return torch.from_numpy(np.array(x))
+    return torch.from_numpy(np.array(x, copy=False))
+
+def compute_s(W: mx.array, L: mx.array, C: mx.array):
+    """
+    Compute one backwards solve along the columns of W.
+    """
+    num_rows, num_values = C.shape
+    _, num_cols = W.shape
+    assert L.shape == (W.shape[1], W.shape[1])
+
+    header = """
+        constant int ROWS_PER_THREAD = 32;  // must be simd group size to match # of threads launched.
+        constant int COL_BLOCK_SIZE = 8;    // flexible - must match TN below
+
+        // MLX GEMV Kernel
+        // https://github.com/ml-explore/mlx/blob/5f5770e3a2646a924449125b150ae855486dee72/mlx/backend/metal/kernels/gemv.metal#L13
+        #define T float
+        #define AccT float
+
+        // TODO: This seems to be worse than manually unrolling. Why?
+        #define MLX_MTL_PRAGMA_UNROLL _Pragma("clang loop unroll(full)")
+
+        //constant int BM = 1;    /* Threadgroup rows (in simdgroups) */
+        //constant int BN = 1;    /* Threadgroup cols (in simdgroups) */
+        constant int SM = 1;    /* Simdgroup rows (in threads) */
+        constant int SN = 32;   /* Simdgroup cols (in threads) */
+        constant int TM = 1;    /* Thread rows (in elements) */
+        constant int TN = 8;    /* Thread cols (in elements) */
+
+        template <typename U = T>
+        static METAL_FUNC void
+        load_unsafe(const device T* src, thread U dst[TN], const int src_offset = 0) {
+            dst[0] = static_cast<U>(src[src_offset + 0]);
+            dst[1] = static_cast<U>(src[src_offset + 1]);
+            dst[2] = static_cast<U>(src[src_offset + 2]);
+            dst[3] = static_cast<U>(src[src_offset + 3]);
+            dst[4] = static_cast<U>(src[src_offset + 4]);
+            dst[5] = static_cast<U>(src[src_offset + 5]);
+            dst[6] = static_cast<U>(src[src_offset + 6]);
+            dst[7] = static_cast<U>(src[src_offset + 7]);
+        }
+
+        template <typename U = T>
+        static METAL_FUNC void load_safe(
+            const device T* src,
+            thread U dst[TN],
+            const int src_offset = 0,
+            const int src_size = TN) {
+                if (src_offset + TN <= src_size) {
+                    for (int tn = 0; tn < TN; tn++) {
+                        dst[tn] = static_cast<U>(src[src_offset + tn]);
+                    }
+                } else { // Edgecase
+                    for (int tn = 0; tn < TN; tn++) {
+                        dst[tn] = src_offset + tn < src_size
+                            ? static_cast<U>(src[src_offset + tn])
+                            : U(0);
+                    }
+                }
+            }
+    """
+    source = """
+        int num_rows =  W_shape[0];
+        int num_cols = W_shape[1]; // Also L.shape[0] and L.shape[1]
+        int num_values = C_shape[1];
+
+        short row_idx = thread_position_in_grid.x;
+        int codebook_start_idx = row_idx * num_values;
+        int W_start_idx = row_idx * num_cols;
+
+        float R = 0;
+        for (short j = num_cols-1; j>= 0; j--) {
+            float wr_value = W[W_start_idx + j] + (R / L[j * num_cols + j]);
+
+            float min_distance = INFINITY;
+            short min_idx = 0;
+            float min_value = INFINITY;
+
+            for (short v_idx = 0; v_idx < num_values; v_idx++) {
+                float codebook_value = C[codebook_start_idx + v_idx];
+                float distance = metal::abs(wr_value - codebook_value);
+
+                if (distance < min_distance) {
+                    min_distance = distance;
+                    min_idx = v_idx;
+                    min_value = codebook_value;
+                }
+                // min_distance = fmin(min_distance, distance);
+                // min_idx = select(min_idx, v_idx, min_distance < distance);
+                // min_value = select(min_value, codebook_value, min_distance < distance);
+            }
+
+            float row_err = W[W_start_idx + j] - min_value;
+            Werr[W_start_idx + j] = row_err;
+            Q[W_start_idx + j] = min_idx;
+            uint S_idx = (row_idx * num_values * num_cols) + (min_idx * num_cols) + j;
+            S[S_idx] = 1; // (row,val,col)
+
+            if (j == 0) break; // No need to compute the last residual. Avoids out of bounds.
+
+            // Compute the residual. Werr[row_idx, j:] @ L[j:, j-1]
+
+            ///////////////////////////////////////
+            ////// Approach 3 -  Modified MLX GEMV
+            ///////////////////////////////////////
+
+            // >>> L must be transposed before this kernel. <<<
+
+            // Lightly modified version of MLX's gemv. Instead of sharing L across threads
+            // each thread owns a part of L and processes a chunk of Werr columns for all
+            // rows in the threadgroup.
+
+            // Werr[tg_start_row:tg_end_row, j:] @ L[j:, j-1]
+            // mat @ vec = [M,K] @ [K,N], N = 1
+
+
+            //                 □─Chunk 1□─Chunk 2□─Chunk 3□─Chunk 4□
+            //                 ┌────────┬────────┬────────┬────────┬──┐
+            //                 │Vector                                │
+            //                 └────────┴────────┴────────┴────────┴──┘
+            //
+            //         □       ┌────────┬────────┬────────┬────────┬──┐
+            //         │       │thread 1 thread 2 thread 1 thread 2│  │
+            //         │       │ iter 1 │ iter 1 │ iter 2 │ iter 2 │  │
+            //         │       │                                   │  │
+            //     32 Rows     │ rows * │ rows * │ rows * │ rows * │  │
+            //   32 Threads    │ Chunk1   Chunk2   Chunk3   Chunk4 │  │
+            //  1 threadgroup  │        │        │        │        │  │
+            //   1 simdgroup   │                                   │  │
+            //         │       │        │        │        │        │  │
+            //         │       │                                   │  │
+            //         □       ├────────┴────────┴────────┴────────┘  │
+            //                 │                                      │
+            //                 │                                      │
+            //                 │                                      │
+            //                 │                                      │
+            //                 │Matrix                                │
+            //                 └──────────────────────────────────────┘
+
+            thread float resM[ROWS_PER_THREAD] = {0};
+            thread float vec_chunk[COL_BLOCK_SIZE] = {0};
+            thread float row_chunk[COL_BLOCK_SIZE] = {0}; // tmp holding for row columns
+
+            short K = num_cols - j;
+
+            // Assumes: ROWS_PER_THREAD >= threads_per_threadgroup == threads_per_simdgroup
+            short num_chunks = K / threads_per_threadgroup.x / COL_BLOCK_SIZE;
+            short leftover = K - (num_chunks * threads_per_threadgroup.x * COL_BLOCK_SIZE);
+
+            short K_offset = thread_position_in_threadgroup.x * COL_BLOCK_SIZE;
+            const device float* mat = &Werr[threads_per_threadgroup.x * threadgroup_position_in_grid.x * num_cols];
+            const device float* vec = &L[(j-1)*num_cols]; // Requires L to be transposed before kernel.
+
+            // Each thread process one chunk at a time.
+            // Chunks assignments are interleaved across threads,
+            // so all chunks that are being processed are adjacent.
+            for (short i = 0; i < num_chunks; i++) {
+                // Unsafe is ok, because we know the chunk is complete.
+                load_unsafe<AccT>(vec, vec_chunk, j + K_offset);
+
+                int mat_offset = 0;
+                //MLX_MTL_PRAGMA_UNROLL
+                for (short m = 0; m < ROWS_PER_THREAD; m++) {
+                    // Unsafe is ok, because we know the chunk is complete.
+                    load_unsafe(mat, row_chunk, mat_offset + j + K_offset);
+
+                    // Accumulate results
+                    //MLX_MTL_PRAGMA_UNROLL
+                    //for (short k = 0; k < COL_BLOCK_SIZE; k++) {
+                    //    resM[m] += row_chunk[k] * vec_chunk[k];
+                    //}
+                    resM[m] += row_chunk[0] * vec_chunk[0];
+                    resM[m] += row_chunk[1] * vec_chunk[1];
+                    resM[m] += row_chunk[2] * vec_chunk[2];
+                    resM[m] += row_chunk[3] * vec_chunk[3];
+                    resM[m] += row_chunk[4] * vec_chunk[4];
+                    resM[m] += row_chunk[5] * vec_chunk[5];
+                    resM[m] += row_chunk[6] * vec_chunk[6];
+                    resM[m] += row_chunk[7] * vec_chunk[7];
+
+                    mat_offset += num_cols;
+                }
+
+                K_offset += threads_per_threadgroup.x * COL_BLOCK_SIZE;
+            }
+
+            // If column count isn't divisible into a full block, handle the leftovers.
+            if (leftover > 0) {
+                // Use safe because this can overflow past the last column.
+                load_safe<AccT>(vec, vec_chunk, j+K_offset, num_cols);
+
+                //MLX_MTL_PRAGMA_UNROLL
+                for (short m = 0; m < ROWS_PER_THREAD; m++) {
+                    // Use safe because this can overflow past the last column.
+                    load_safe(&mat[m*num_cols], row_chunk, j+K_offset, num_cols);
+
+                    //MLX_MTL_PRAGMA_UNROLL
+                    for (short k = 0; k < COL_BLOCK_SIZE; k++) {
+                        resM[m] += row_chunk[k] * vec_chunk[k];
+                    }
+                    // Manually unrolling both in load_safe and here is a lot slower.
+                    // Either or neither is ~same.
+                    //resM[m] += row_chunk[0] * vec_chunk[0];
+                    //resM[m] += row_chunk[1] * vec_chunk[1];
+                    //resM[m] += row_chunk[2] * vec_chunk[2];
+                    //resM[m] += row_chunk[3] * vec_chunk[3];
+                    //resM[m] += row_chunk[4] * vec_chunk[4];
+                    //resM[m] += row_chunk[5] * vec_chunk[5];
+                    //resM[m] += row_chunk[6] * vec_chunk[6];
+                    //resM[m] += row_chunk[7] * vec_chunk[7];
+                }
+            }
+
+            // Thread 0 gets the sum of all resM[0], Thread 1 all resM[1], ... and so forth.
+            //MLX_MTL_PRAGMA_UNROLL
+            for (short i = 0; i < SN; ++i) {
+                resM[i] = simd_sum(resM[i]); // technically only thread i needs this.
+            }
+
+            simdgroup_barrier(mem_flags::mem_none);
+            R = resM[thread_position_in_threadgroup.x];
+        }
+    """
+    # threads_per_simdgroup: 32
+    # thread_execution_width: 32
+    # simdgroups_per_threadgroup: 24
+    # quadgroups_per_threadgroup: 192 # ceil(threads_per_threadgroup/4)
+    # threads_per_grid: [768,1,1] # as set below
+    kernel = mx.fast.metal_kernel(
+        name="compute_s",
+        input_names=["W", "L", "C"],
+        output_names=["Q", "S", "Werr"],
+        header=header,
+        source=source,
+    )
+
+    outputs = kernel(
+        inputs=[W,L.T,C],
+        grid=(num_rows, 1, 1), # threads_per_grid
+        threadgroup=(32, 1, 1), # threads_per_threadgroup (1 simdgroup)
+        output_shapes=[(num_rows, num_cols), (num_rows, num_values, num_cols), (num_rows, num_cols)],
+        output_dtypes=[mx.uint32, mx.float32, mx.float32],
+        init_value=0, # Lot of outputs, better to let MLX do it.
+    )
+
+    return outputs[0].astype(mx.int64), outputs[1]
 
 def find_nearest_codebook_indices(W: mx.array, R: mx.array, C: mx.array):
     """
@@ -86,7 +334,7 @@ def find_nearest_codebook_indices(W: mx.array, R: mx.array, C: mx.array):
         threadgroup=(min(256, num_rows), 1, 1), # threads_per_threadgroup
         output_shapes=[(num_rows,), (num_rows, num_values), (num_rows,)],
         output_dtypes=[mx.uint32, mx.float32, mx.float32],
-        init_value=0, # Avoid manually zero-ing one-hot outputs.
+        init_value=0,  # Manually zero-ing S in the kernel is faster for small problems.
     )
 
     return outputs[0], outputs[1], outputs[2]
@@ -121,7 +369,6 @@ def solve_for_s(W, L, Q, S, T, r, num_rows, num_cols):
 
 @mx.compile
 def solve_for_s_fast(W, L, Q, S, T, r, num_rows, num_cols):
-    row_indices = mx.arange(num_rows)
     LT = L.T
 
     # Paper: for j ← n-1 to 0 do
@@ -204,15 +451,16 @@ class GANQ(GPTQ):
 
     def solve_via_mlx(self, W, H, L, Q, S, T):
         W = to_mlx(W)
-        H = to_mlx(H)
+        # H = to_mlx(H)
         L = to_mlx(L)
-        Q = to_mlx(Q)
-        S = to_mlx(S)
+        # Q = to_mlx(Q)
+        # S = to_mlx(S)
         T = to_mlx(T)
-        r = mx.zeros((W.shape[0], 1))
+        # r = mx.zeros((W.shape[0], 1))
         # These are compiled, so easiest if they are not methods on the class.
-        # Q, S = solve_for_s(W, L, Q, S, T, r, W.shape[0], W.shape[1])
-        Q, S = solve_for_s_fast(W, L, Q, S, T, r, W.shape[0], W.shape[1])
+        # Q, S = solve_for_s(W, L, Q, S, T, r, W.shape[0], W.shape[1]) # just compiled MLX (better than torch MPS)
+        # Q, S = solve_for_s_fast(W, L, Q, S, T, r, W.shape[0], W.shape[1]) # kernel for just codebook lookup (helps a lot)
+        Q,S = compute_s(W,L,T) # fused kernel (helps a ton)
         # T = solve_for_t(W, H, S) # Sadly, this is not numerically stable or maybe buggy.
         return [from_mlx(o) for o in [Q,S]]
 
@@ -241,7 +489,7 @@ class GANQ(GPTQ):
         Return T^K, Q^K
         """
 
-        start = time.time()
+        start = time.perf_counter()
         # Input: W ∈ ℝᵐ×ⁿ, X ∈ ℝⁿ×ᵖ, initial codebook T⁰ ∈ ℝᵐ×²ᴺ, number of iterations K
         num_rows, num_cols = W.shape   # W ∈ ℝᵐ×ⁿ
         num_bits = self.qcfg.bits      # N bits for quantization
@@ -279,15 +527,20 @@ class GANQ(GPTQ):
         Wadj = torch.empty_like(W) if not USE_MLX else None
         best = (float('inf'), None, None) # dist, T, Q
 
+        if USE_MLX:
+            # These are constant throughout, convert once.
+            W_mlx = to_mlx(W)
+            L_mlx = to_mlx(L)
+
         # Paper: for k ← 0 to K-1 do
-        print("init", time.time() - start, "sec")
+        print("init", time.perf_counter() - start, "sec")
         for k in range(self.iterations):
-            start = time.time()
+            start = time.perf_counter()
 
             if USE_MLX:
-                Q, S = self.solve_via_mlx(W, H, L, Q, S, T)
+                Q, S = self.solve_via_mlx(W_mlx, H, L_mlx, Q, S, T)
                 Q, S = Q.to(W.device), S.to(W.device)
-                # print("mlx loop time: ", time.time() - start, "sec")
+                # print("mlx loop time: ", time.perf_counter() - start, "sec")
             else:
                 # Paper: Initialize residual r = 0^(m×1)
                 r = torch.zeros(num_rows, 1, device=W.device)
@@ -324,7 +577,7 @@ class GANQ(GPTQ):
                     r = (W[:, j:] - Wq)@L[j:, j-1].unsqueeze(-1) # j-1, not j, See equation 20.
                     # assert r.shape == (num_rows, 1), f"Expected shape ({num_rows=}, 1), got {r.shape=}"
                     # print("r", r[0], L[j,j])
-                # print("torch loop time", time.time() - start, "sec")
+                # print("torch loop time", time.perf_counter() - start, "sec")
 
             # Paper: T^(k+1) = WH(S^(k+1))^T((S^(k+1))H^T(S^(k+1))^T)^† # batch update
             assert S.shape == (num_rows, num_values, num_cols), f"Expected shape ({num_rows=}, {num_values=}, {num_cols=}), got {S.shape=}"
@@ -379,7 +632,7 @@ class GANQ(GPTQ):
 
             Wq = T.gather(1, Q)
             curr_dist = quad_loss_2(W, Wq, H)
-            print("loop dist", curr_dist, time.time() - start, "sec via", "mlx" if USE_MLX else "torch")
+            print("loop dist", curr_dist, time.perf_counter() - start, "sec via", "mlx" if USE_MLX else "torch")
 
             if curr_dist.item() < best[0]:
                 best = (curr_dist.item(), T, Q)
@@ -417,7 +670,7 @@ class GANQ(GPTQ):
         Q = Q.clone()
         T = T.clone()
 
-        tick = time.time()
+        tick = time.perf_counter()
         with torch.no_grad():
             offset = (W.mm(H) * W).sum()
             Wq = self.make_quantized_weight(Q,T)
@@ -459,7 +712,7 @@ class GANQ(GPTQ):
 
                 del orig_centroids
                 # print(
-                #     f"time M-step SGD {(time.time() - tick):.2f}; final loss: {loss.item():.4f}"
+                #     f"time M-step SGD {(time.perf_counter() - tick):.2f}; final loss: {loss.item():.4f}"
                 # )
                 orig_loss = quad_loss_2(W, Wq, H)
                 snr_after = 10 * np.log10(offset.item() / orig_loss.item())
