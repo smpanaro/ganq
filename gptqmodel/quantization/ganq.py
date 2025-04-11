@@ -46,7 +46,7 @@ def compute_s(W: mx.array, L: mx.array, C: mx.array):
 
     header = """
         constant int ROWS_PER_THREAD = 32;  // must be simd group size to match # of threads launched.
-        constant int COL_BLOCK_SIZE = 8;    // flexible - must match TN below
+        constant int COL_BLOCK_SIZE = 4;    // flexible - must match TN below
 
         // MLX GEMV Kernel
         // https://github.com/ml-explore/mlx/blob/5f5770e3a2646a924449125b150ae855486dee72/mlx/backend/metal/kernels/gemv.metal#L13
@@ -61,7 +61,7 @@ def compute_s(W: mx.array, L: mx.array, C: mx.array):
         constant int SM = 1;    /* Simdgroup rows (in threads) */
         constant int SN = 32;   /* Simdgroup cols (in threads) */
         constant int TM = 1;    /* Thread rows (in elements) */
-        constant int TN = 8;    /* Thread cols (in elements) */
+        constant int TN = 4;    /* Thread cols (in elements) */
 
         template <typename U = T>
         static METAL_FUNC void
@@ -70,10 +70,6 @@ def compute_s(W: mx.array, L: mx.array, C: mx.array):
             dst[1] = static_cast<U>(src[src_offset + 1]);
             dst[2] = static_cast<U>(src[src_offset + 2]);
             dst[3] = static_cast<U>(src[src_offset + 3]);
-            dst[4] = static_cast<U>(src[src_offset + 4]);
-            dst[5] = static_cast<U>(src[src_offset + 5]);
-            dst[6] = static_cast<U>(src[src_offset + 6]);
-            dst[7] = static_cast<U>(src[src_offset + 7]);
         }
 
         template <typename U = T>
@@ -209,10 +205,6 @@ def compute_s(W: mx.array, L: mx.array, C: mx.array):
                     resM[m] += row_chunk[1] * vec_chunk[1];
                     resM[m] += row_chunk[2] * vec_chunk[2];
                     resM[m] += row_chunk[3] * vec_chunk[3];
-                    resM[m] += row_chunk[4] * vec_chunk[4];
-                    resM[m] += row_chunk[5] * vec_chunk[5];
-                    resM[m] += row_chunk[6] * vec_chunk[6];
-                    resM[m] += row_chunk[7] * vec_chunk[7];
 
                     mat_offset += num_cols;
                 }
@@ -240,10 +232,6 @@ def compute_s(W: mx.array, L: mx.array, C: mx.array):
                     //resM[m] += row_chunk[1] * vec_chunk[1];
                     //resM[m] += row_chunk[2] * vec_chunk[2];
                     //resM[m] += row_chunk[3] * vec_chunk[3];
-                    //resM[m] += row_chunk[4] * vec_chunk[4];
-                    //resM[m] += row_chunk[5] * vec_chunk[5];
-                    //resM[m] += row_chunk[6] * vec_chunk[6];
-                    //resM[m] += row_chunk[7] * vec_chunk[7];
                 }
             }
 
