@@ -138,7 +138,7 @@ jobs:
       image: ${{ needs.check-vm.outputs.ip }}:5000/modelcloud/gptqmodel:${{ matrix.tag }}
     steps:
       - name: Checkout Codes
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ env.repo }}
           ref: ${{ env.ref }}
@@ -219,7 +219,7 @@ jobs:
       RELEASE_MODE: 0
     steps:
       - name: Checkout Codes
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ env.repo }}
           ref: ${{ env.ref }}
