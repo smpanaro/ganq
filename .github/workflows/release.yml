@@ -138,7 +138,7 @@ jobs:
       image: ${{ needs.check-vm.outputs.ip }}:5000/modelcloud/gptqmodel:${{ matrix.tag }}
     steps:
       - name: Checkout Codes
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ env.repo }}
           ref: ${{ env.ref }}
@@ -192,7 +192,7 @@ jobs:
           fi
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         continue-on-error: ${{ env.UPLOADED == '1' }}
         with:
           overwrite: true
@@ -219,7 +219,7 @@ jobs:
       RELEASE_MODE: 0
     steps:
       - name: Checkout Codes
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ env.repo }}
           ref: ${{ env.ref }}
@@ -257,7 +257,7 @@ jobs:
           fi
 
       - name: Upload to artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         continue-on-error: ${{ env.UPLOADED == '1' }}
         with:
           name: ${{ env.WHL_NAME }}
